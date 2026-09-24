@@ -358,6 +358,7 @@
   }
 
   function route() {
+    if ((location.hash || '').indexOf('#sec-') === 0) return;   // 目录锚点，交给浏览器滚动
     var id = currentId();
     if (!id) { renderHome(); return; }
     if (!state.byId[id]) { renderMissing(id); return; }
@@ -390,6 +391,7 @@
       fixArticle();
       document.title = p.title + ' · 溯回纪元 wiki';
       window.scrollTo(0, 0);
+      updateProgress();
     }).catch(function (e) {
       $('#article').innerHTML = '<div class="welcome">页面载入失败：' + esc(e.message) + '</div>';
     });
@@ -414,41 +416,106 @@
   }
 
   function fixArticle() {
+    var art = $('#article');
     // 任务清单样式
-    var lis = document.querySelectorAll('#article li');
+    var lis = art.querySelectorAll('li');
     for (var i = 0; i < lis.length; i++) {
       if (lis[i].querySelector('input[type="checkbox"]')) lis[i].classList.add('task');
     }
+    // 宽表格加横向滚动容器
+    var tables = art.querySelectorAll('table');
+    for (var t = 0; t < tables.length; t++) {
+      var tb = tables[t];
+      if (tb.parentNode.className === 'tw') continue;
+      var wrap = document.createElement('div');
+      wrap.className = 'tw';
+      tb.parentNode.insertBefore(wrap, tb);
+      wrap.appendChild(tb);
+    }
     // 外链新窗口
-    var as = document.querySelectorAll('#article a[href^="http"]');
+    var as = art.querySelectorAll('a[href^="http"]');
     for (var j = 0; j < as.length; j++) { as[j].target = '_blank'; as[j].rel = 'noopener'; }
     // 站内链接：关闭移动端侧栏
-    var wl = document.querySelectorAll('#article a.wikilink, .backlinks a');
+    var wl = art.querySelectorAll('a.wikilink, .backlinks a');
     for (var k = 0; k < wl.length; k++) {
       wl[k].addEventListener('click', function () { document.body.classList.remove('nav-open'); });
     }
+    buildToc(art);
+  }
+
+  /* ---------- 本页目录 / 锚点 / 阅读进度 ---------- */
+  function buildToc(art) {
+    var toc = $('#toc');
+    toc.innerHTML = '<div class="toc-title">本页目录</div>';
+    var hs = art.querySelectorAll('h2, h3');
+    var links = [];
+    for (var i = 0; i < hs.length; i++) {
+      var h = hs[i];
+      var id = 'sec-' + i;
+      h.setAttribute('id', id);
+      if (!h.querySelector('.heading-anchor')) {
+        var a = document.createElement('a');
+        a.className = 'heading-anchor';
+        a.href = '#' + id;
+        a.textContent = '#';
+        h.appendChild(a);
+      }
+      var item = document.createElement('a');
+      item.href = '#' + id;
+      item.className = h.tagName === 'H3' ? 'lv3' : '';
+      item.textContent = h.textContent.replace(/#$/, '').trim();
+      toc.appendChild(item);
+      links.push({ el: item, target: h });
+    }
+    if (!links.length) { toc.style.display = 'none'; return; }
+    toc.style.display = '';
+    if (state.observer) state.observer.disconnect();
+    state.observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        links.forEach(function (l) { l.el.classList.toggle('on', l.target === e.target); });
+      });
+    }, { rootMargin: '-10% 0px -80% 0px' });
+    links.forEach(function (l) { state.observer.observe(l.target); });
+  }
+
+  function updateProgress() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
+    $('#progress').style.width = (p * 100).toFixed(2) + '%';
+    $('#to-top').classList.toggle('show', (h.scrollTop || document.body.scrollTop) > 400);
   }
 
   function renderHome() {
     state.current = null;
     renderNav('');
     var mf = state.manifest;
-    var html = '<div class="page-head"><h1 class="page-title">溯回纪元 · 设定 wiki</h1>'
-      + '<div class="metas"><span class="chip status">共 ' + Object.keys(mf.pages).length + ' 页</span>'
-      + (mf.updated ? '<span class="chip">更新于 ' + esc(mf.updated) + '</span>' : '') + '</div></div>'
-      + '<p>左侧选择页面。所有内容来自本地 wiki 目录，随设定更新同步。</p>';
+    var ids = Object.keys(mf.pages);
+    var done = ids.filter(function (id) { return /定稿/.test(state.byId[id].status || ''); }).length;
+    var html = '<div class="hero">'
+      + '<h1>溯回纪元</h1>'
+      + '<p class="sub">设定知识库 · 现实世界无法容纳之物，都记在这里</p>'
+      + '<div class="stats">'
+      + '<div class="stat"><div class="v">' + ids.length + '</div><div class="k">条目</div></div>'
+      + '<div class="stat"><div class="v">' + mf.categories.length + '</div><div class="k">分类</div></div>'
+      + '<div class="stat"><div class="v">' + done + '</div><div class="k">定稿</div></div>'
+      + '<div class="stat"><div class="v">' + esc(mf.updated || '') + '</div><div class="k">最近更新</div></div>'
+      + '</div></div>'
+      + '<div class="cat-grid">';
     mf.categories.forEach(function (cat) {
-      html += '<h2>' + esc(cat.name) + '</h2><ul>';
+      html += '<div class="cat-card"><h3>' + esc(cat.name) + '<span>' + cat.pages.length + '</span></h3><div class="chips">';
       cat.pages.forEach(function (id) {
         var p = state.byId[id];
-        html += '<li><a class="wikilink" href="#/' + encPath(id) + '">' + esc(p.title) + '</a>'
-          + (p.sum ? ' —— <span style="color:var(--text-dim)">' + esc(p.sum) + '</span>' : '') + '</li>';
+        html += '<a class="chip-link" href="#/' + encPath(id) + '" title="' + esc(p.sum || '') + '">' + esc(p.title) + '</a>';
       });
-      html += '</ul>';
+      html += '</div></div>';
     });
+    html += '</div>';
     $('#article').innerHTML = html;
     document.title = '溯回纪元 · 设定 wiki';
     fixArticle();
+    updateProgress();
   }
 
   function renderMissing(id) {
@@ -559,7 +626,10 @@
       $('#page-count').textContent = Object.keys(mf.pages).length + ' 页';
       initSearch();
       window.addEventListener('hashchange', route);
+      window.addEventListener('scroll', updateProgress, { passive: true });
       $('#sidebar-toggle').addEventListener('click', function () { document.body.classList.toggle('nav-open'); });
+      $('#backdrop').addEventListener('click', function () { document.body.classList.remove('nav-open'); });
+      $('#to-top').addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
       route();
     }).catch(function (e) {
       $('#nav').innerHTML = '<div class="nav-empty">目录载入失败：' + esc(e.message) + '</div>';
